@@ -2,6 +2,8 @@ import streamlit as st
 import yt_dlp
 import os
 import uuid
+import tempfile
+from pathlib import Path
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -46,42 +48,140 @@ with col2:
     
     if st.button("📥 Generate Download Link"):
         if url:
-            unique_filename = f"video_{uuid.uuid4().hex[:8]}.mp4"
+            # Create unique filename in temp directory
+            temp_dir = tempfile.mkdtemp()
+            unique_filename = os.path.join(temp_dir, f"video_{uuid.uuid4().hex[:8]}.mp4")
             
             with st.spinner("🚀 Fetching video data... Please wait..."):
                 try:
-                    # FIX for 403 Forbidden Error
+                    # Comprehensive yt-dlp options to fix 403 Forbidden
                     ydl_opts = {
-                        'format': 'best',
+                        'format': 'best[ext=mp4]/best',  # Prefer MP4 format
                         'outtmpl': unique_filename,
                         'quiet': True,
                         'no_warnings': True,
+                        'extract_flat': False,
+                        'force_generic_extractor': False,
+                        
+                        # Add comprehensive headers to avoid 403
                         'http_headers': {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                        }
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                            'Accept-Language': 'en-us,en;q=0.5',
+                            'Sec-Fetch-Mode': 'navigate',
+                        },
+                        
+                        # Additional options for better compatibility
+                        'extractor_args': {
+                            'youtube': {
+                                'player_client': ['android', 'web'],  # Try multiple clients
+                                'skip': ['hls', 'dash'],  # Skip problematic formats
+                            }
+                        },
+                        
+                        # Retry and timeout settings
+                        'retries': 10,
+                        'fragment_retries': 10,
+                        'file_access_retries': 5,
+                        'extractor_retries': 5,
+                        'socket_timeout': 30,
+                        
+                        # Cookies handling (optional, but can help)
+                        'cookiefile': None,  # Add path to cookies.txt if needed
+                        
+                        # Geo-bypass if needed
+                        'geo_bypass': True,
+                        
+                        # Other useful options
+                        'nocheckcertificate': True,
+                        'prefer_free_formats': True,
                     }
                     
+                    # Try to extract info first without downloading
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    
-                    if os.path.exists(unique_filename):
-                        with open(unique_filename, "rb") as file:
-                            st.success("✅ Your video is ready for download!")
-                            st.download_button(
-                                label="💾 Save Video to Device",
-                                data=file,
-                                file_name=unique_filename,
-                                mime="video/mp4",
-                                key=f"btn_{unique_filename}"
-                            )
-                        os.remove(unique_filename) # Cleanup
+                        # First try to extract info to verify the URL
+                        info = ydl.extract_info(url, download=False)
+                        
+                        if info:
+                            # If info extraction successful, proceed with download
+                            st.info(f"📹 Video Found: {info.get('title', 'Unknown Title')}")
+                            
+                            # Now download the video
+                            ydl.download([url])
+                            
+                            if os.path.exists(unique_filename):
+                                file_size = os.path.getsize(unique_filename) / (1024 * 1024)  # Size in MB
+                                
+                                with open(unique_filename, "rb") as file:
+                                    st.success(f"✅ Video ready! Size: {file_size:.2f} MB")
+                                    st.download_button(
+                                        label="💾 Save Video to Device",
+                                        data=file,
+                                        file_name=f"{info.get('title', 'video')[:50]}.mp4",
+                                        mime="video/mp4",
+                                        key=f"btn_{uuid.uuid4().hex[:8]}"
+                                    )
+                                
+                                # Cleanup
+                                os.remove(unique_filename)
+                                os.rmdir(temp_dir)
+                            else:
+                                st.error("File not found after download. Please try again.")
+                        else:
+                            st.error("Could not extract video information. Try another link.")
+                            
+                except yt_dlp.utils.DownloadError as e:
+                    error_msg = str(e)
+                    if "403" in error_msg:
+                        st.error("❌ Access Forbidden (403). Trying alternative method...")
+                        # Fallback method
+                        try:
+                            # Try with different settings
+                            fallback_opts = {
+                                'format': 'worst',  # Try worst quality first
+                                'outtmpl': unique_filename,
+                                'quiet': True,
+                                'http_headers': {
+                                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1',
+                                },
+                                'force_generic_extractor': True,  # Force generic extractor
+                            }
+                            
+                            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                                ydl.download([url])
+                                
+                            if os.path.exists(unique_filename):
+                                with open(unique_filename, "rb") as file:
+                                    st.success("✅ Video downloaded with alternative method!")
+                                    st.download_button(
+                                        label="💾 Save Video",
+                                        data=file,
+                                        file_name=f"video_{uuid.uuid4().hex[:8]}.mp4",
+                                        mime="video/mp4"
+                                    )
+                                os.remove(unique_filename)
+                                os.rmdir(temp_dir)
+                        except Exception as fallback_error:
+                            st.error(f"Both methods failed. Error: {fallback_error}")
+                    else:
+                        st.error(f"Download Error: {error_msg}")
+                        
                 except Exception as e:
-                    st.error(f"Error: {e}. Try another link or check your internet.")
+                    st.error(f"Error: {str(e)}. Try another link or check your internet.")
+                    
+                finally:
+                    # Cleanup temp directory if it exists and is empty
+                    if os.path.exists(temp_dir):
+                        try:
+                            os.rmdir(temp_dir)
+                        except:
+                            pass
         else:
             st.warning("Bahi, please paste a valid URL first!")
 
 st.markdown("---")
 
+# Rest of your code remains the same...
 # --- SEO ARTICLE SECTION (2000+ Words for AdSense & Rank Math) ---
 st.write("## Comprehensive Guide to Social Media Video Downloader")
 st.write("""
